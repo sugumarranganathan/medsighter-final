@@ -47,25 +47,25 @@ const preprocessImage = async (
 
       const data = imageData.data;
 
-      // Convert to grayscale + boost contrast
+      // grayscale + contrast enhancement
       for (let i = 0; i < data.length; i += 4) {
         const avg =
           (data[i] + data[i + 1] + data[i + 2]) / 3;
 
-        const contrast = avg > 140 ? 255 : 0;
+        const enhanced = avg > 135 ? 255 : 0;
 
-        data[i] = contrast;
-        data[i + 1] = contrast;
-        data[i + 2] = contrast;
+        data[i] = enhanced;
+        data[i + 1] = enhanced;
+        data[i + 2] = enhanced;
       }
 
       ctx.putImageData(imageData, 0, 0);
 
-      const processedBase64 = canvas
+      const processed = canvas
         .toDataURL('image/jpeg', 1.0)
         .split(',')[1];
 
-      resolve(processedBase64);
+      resolve(processed);
     };
   });
 };
@@ -87,12 +87,14 @@ const extractText = async (
     }
   );
 
-  console.log('OCR TEXT:', text);
+  console.log('OCR RESULT:', text);
 
   return text || '';
 };
 
-const findExpiryDate = (text: string): string => {
+const findExpiryDate = (
+  text: string
+): string => {
   const patterns = [
     /EXP\s*[:\-]?\s*(\d{2}[\/\-]\d{4})/i,
     /EXPIRY\s*[:\-]?\s*(\d{2}[\/\-]\d{4})/i,
@@ -112,7 +114,9 @@ const findExpiryDate = (text: string): string => {
   return 'Not Found';
 };
 
-const checkExpired = (expiry: string): boolean => {
+const checkExpired = (
+  expiry: string
+): boolean => {
   if (expiry === 'Not Found') return false;
 
   const clean = expiry.replace('-', '/');
@@ -133,27 +137,67 @@ const checkExpired = (expiry: string): boolean => {
   return new Date() > expiryDate;
 };
 
-const findMedicineName = (text: string): string => {
+const findMedicineName = (
+  text: string
+): string => {
   const lines = text
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const filteredLines = lines.filter((line) => {
+  const cleaned = lines
+    .map((line) =>
+      line.replace(/[^a-zA-Z0-9\s]/g, '')
+    )
+    .filter((line) => line.length > 3);
+
+  const ignoreWords = [
+    'schedule',
+    'prescription',
+    'marketed',
+    'manufactured',
+    'warning',
+    'tablet contains',
+    'equivalent',
+    'alkem',
+    'contains',
+    'dosage',
+    'batch'
+  ];
+
+  const candidates = cleaned.filter((line) => {
     const lower = line.toLowerCase();
 
-    return (
-      line.length > 3 &&
-      !lower.includes('schedule') &&
-      !lower.includes('prescription') &&
-      !lower.includes('marketed') &&
-      !lower.includes('manufactured') &&
-      !lower.includes('warning') &&
-      !lower.includes('tablet contains')
+    return !ignoreWords.some((word) =>
+      lower.includes(word)
     );
   });
 
-  return filteredLines[0] || 'Medicine Not Detected';
+  // prioritize medicine-style names
+  const medicineLine = candidates.find(
+    (line) =>
+      /[A-Za-z]+\s?\d+/.test(line)
+  );
+
+  if (medicineLine) {
+    return medicineLine;
+  }
+
+  // fallback to uppercase-heavy lines
+  const upperCaseLine = candidates.find(
+    (line) => {
+      const upperCount =
+        line.replace(/[^A-Z]/g, '').length;
+
+      return upperCount > line.length / 2;
+    }
+  );
+
+  if (upperCaseLine) {
+    return upperCaseLine;
+  }
+
+  return candidates[0] || 'Medicine Not Detected';
 };
 
 export const analyzeExpiry = async (
@@ -161,13 +205,16 @@ export const analyzeExpiry = async (
 ): Promise<ExpiryResult> => {
   const text = await extractText(imageBase64);
 
-  console.log('FINAL OCR:', text);
+  console.log('FINAL OCR TEXT:', text);
 
-  const medicineName = findMedicineName(text);
+  const medicineName =
+    findMedicineName(text);
 
-  const expiryDate = findExpiryDate(text);
+  const expiryDate =
+    findExpiryDate(text);
 
-  const isExpired = checkExpired(expiryDate);
+  const isExpired =
+    checkExpired(expiryDate);
 
   return {
     medicineName,
@@ -197,12 +244,15 @@ export const verifyPrescription = async (
   const actualMedicine =
     findMedicineName(medicineText);
 
-  const firstWord = prescriptionMedicine
-    .split(' ')[0]
-    .toLowerCase();
+  const prescriptionWord =
+    prescriptionMedicine
+      .split(' ')[0]
+      .toLowerCase();
 
   const isMatch =
-    medicineText.includes(firstWord);
+    medicineText.includes(
+      prescriptionWord
+    );
 
   return {
     prescriptionMedicine,
