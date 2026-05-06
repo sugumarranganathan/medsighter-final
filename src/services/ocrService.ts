@@ -16,6 +16,23 @@ export interface VerificationResult {
   instructions: string;
 }
 
+const MEDICINE_KEYWORDS = [
+  'gudcef',
+  'dolo',
+  'paracetamol',
+  'azithromycin',
+  'cetirizine',
+  'amoxicillin',
+  'cefpodoxime',
+  'augmentin',
+  'crocin',
+  'sinarest',
+  'calpol',
+  'atorvastatin',
+  'metformin',
+  'pantoprazole'
+];
+
 const preprocessImage = async (
   imageBase64: string
 ): Promise<string> => {
@@ -33,10 +50,17 @@ const preprocessImage = async (
         return;
       }
 
-      canvas.width = img.width;
-      canvas.height = img.height;
+      // upscale image for better OCR
+      canvas.width = img.width * 2;
+      canvas.height = img.height * 2;
 
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(
+        img,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
 
       const imageData = ctx.getImageData(
         0,
@@ -47,12 +71,12 @@ const preprocessImage = async (
 
       const data = imageData.data;
 
-      // grayscale + contrast enhancement
+      // grayscale + adaptive threshold
       for (let i = 0; i < data.length; i += 4) {
         const avg =
           (data[i] + data[i + 1] + data[i + 2]) / 3;
 
-        const enhanced = avg > 135 ? 255 : 0;
+        const enhanced = avg > 150 ? 255 : 0;
 
         data[i] = enhanced;
         data[i + 1] = enhanced;
@@ -73,9 +97,8 @@ const preprocessImage = async (
 const extractText = async (
   imageBase64: string
 ): Promise<string> => {
-  const processedImage = await preprocessImage(
-    imageBase64
-  );
+  const processedImage =
+    await preprocessImage(imageBase64);
 
   const {
     data: { text }
@@ -87,7 +110,7 @@ const extractText = async (
     }
   );
 
-  console.log('OCR RESULT:', text);
+  console.log('OCR TEXT:', text);
 
   return text || '';
 };
@@ -137,19 +160,20 @@ const checkExpired = (
   return new Date() > expiryDate;
 };
 
+const cleanLine = (line: string): string => {
+  return line
+    .replace(/[^a-zA-Z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 const findMedicineName = (
   text: string
 ): string => {
   const lines = text
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => cleanLine(line))
     .filter(Boolean);
-
-  const cleaned = lines
-    .map((line) =>
-      line.replace(/[^a-zA-Z0-9\s]/g, '')
-    )
-    .filter((line) => line.length > 3);
 
   const ignoreWords = [
     'schedule',
@@ -162,28 +186,45 @@ const findMedicineName = (
     'alkem',
     'contains',
     'dosage',
-    'batch'
+    'batch',
+    'ph date',
+    'mrp',
+    'tablets ip'
   ];
 
-  const candidates = cleaned.filter((line) => {
+  const candidates = lines.filter((line) => {
     const lower = line.toLowerCase();
 
-    return !ignoreWords.some((word) =>
-      lower.includes(word)
+    return (
+      line.length > 3 &&
+      !ignoreWords.some((word) =>
+        lower.includes(word)
+      )
     );
   });
 
-  // prioritize medicine-style names
-  const medicineLine = candidates.find(
-    (line) =>
-      /[A-Za-z]+\s?\d+/.test(line)
-  );
+  // highest priority → known medicine keywords
+  for (const line of candidates) {
+    const lower = line.toLowerCase();
 
-  if (medicineLine) {
-    return medicineLine;
+    for (const keyword of MEDICINE_KEYWORDS) {
+      if (lower.includes(keyword)) {
+        return line;
+      }
+    }
   }
 
-  // fallback to uppercase-heavy lines
+  // second priority → medicine pattern
+  const medicinePattern = candidates.find(
+    (line) =>
+      /^[A-Za-z]+\s?\d{2,4}$/i.test(line)
+  );
+
+  if (medicinePattern) {
+    return medicinePattern;
+  }
+
+  // third priority → uppercase dominant
   const upperCaseLine = candidates.find(
     (line) => {
       const upperCount =
@@ -205,7 +246,7 @@ export const analyzeExpiry = async (
 ): Promise<ExpiryResult> => {
   const text = await extractText(imageBase64);
 
-  console.log('FINAL OCR TEXT:', text);
+  console.log('FINAL OCR:', text);
 
   const medicineName =
     findMedicineName(text);
@@ -230,13 +271,11 @@ export const verifyPrescription = async (
   prescriptionBase64: string,
   medicineBase64: string
 ): Promise<VerificationResult> => {
-  const prescriptionText = (
-    await extractText(prescriptionBase64)
-  ).toLowerCase();
+  const prescriptionText =
+    await extractText(prescriptionBase64);
 
-  const medicineText = (
-    await extractText(medicineBase64)
-  ).toLowerCase();
+  const medicineText =
+    await extractText(medicineBase64);
 
   const prescriptionMedicine =
     findMedicineName(prescriptionText);
@@ -244,15 +283,21 @@ export const verifyPrescription = async (
   const actualMedicine =
     findMedicineName(medicineText);
 
-  const prescriptionWord =
+  const prescriptionWords =
     prescriptionMedicine
-      .split(' ')[0]
-      .toLowerCase();
+      .toLowerCase()
+      .split(' ');
+
+  const medicineLower =
+    actualMedicine.toLowerCase();
+
+  const matchedWords =
+    prescriptionWords.filter((word) =>
+      medicineLower.includes(word)
+    );
 
   const isMatch =
-    medicineText.includes(
-      prescriptionWord
-    );
+    matchedWords.length >= 1;
 
   return {
     prescriptionMedicine,
