@@ -1,0 +1,13 @@
+{
+  "name": "MedSighter",
+  "description": "An accessibility-focused app for visually impaired persons to check medicine expiry and verify pharmacist dispensed medication matches doctor prescriptions.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "AI Vision Analysis",
+    "Text-to-Speech Results",
+    "Prescription Verification"
+  ]
+}
