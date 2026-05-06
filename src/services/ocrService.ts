@@ -50,9 +50,9 @@ const preprocessImage = async (
         return;
       }
 
-      // upscale image for better OCR
-      canvas.width = img.width * 2;
-      canvas.height = img.height * 2;
+      // Bigger image for OCR accuracy
+      canvas.width = img.width * 3;
+      canvas.height = img.height * 3;
 
       ctx.drawImage(
         img,
@@ -71,16 +71,23 @@ const preprocessImage = async (
 
       const data = imageData.data;
 
-      // grayscale + adaptive threshold
+      // grayscale + contrast enhancement
       for (let i = 0; i < data.length; i += 4) {
-        const avg =
-          (data[i] + data[i + 1] + data[i + 2]) / 3;
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
 
-        const enhanced = avg > 150 ? 255 : 0;
+        const gray =
+          0.299 * r +
+          0.587 * g +
+          0.114 * b;
 
-        data[i] = enhanced;
-        data[i + 1] = enhanced;
-        data[i + 2] = enhanced;
+        const contrast =
+          gray > 145 ? 255 : 0;
+
+        data[i] = contrast;
+        data[i + 1] = contrast;
+        data[i + 2] = contrast;
       }
 
       ctx.putImageData(imageData, 0, 0);
@@ -160,11 +167,75 @@ const checkExpired = (
   return new Date() > expiryDate;
 };
 
-const cleanLine = (line: string): string => {
+const cleanLine = (
+  line: string
+): string => {
   return line
     .replace(/[^a-zA-Z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+};
+
+const scoreMedicineLine = (
+  line: string
+): number => {
+  let score = 0;
+
+  const lower = line.toLowerCase();
+
+  // keyword bonus
+  for (const keyword of MEDICINE_KEYWORDS) {
+    if (lower.includes(keyword)) {
+      score += 100;
+    }
+  }
+
+  // uppercase bonus
+  const upperCount =
+    line.replace(/[^A-Z]/g, '').length;
+
+  score += upperCount * 2;
+
+  // medicine-number pattern
+  if (/[A-Za-z]+\s?\d{2,4}/.test(line)) {
+    score += 50;
+  }
+
+  // preferred length
+  if (line.length > 5 && line.length < 25) {
+    score += 20;
+  }
+
+  // remove noisy prefixes
+  if (
+    lower.startsWith('tab') ||
+    lower.startsWith('somm') ||
+    lower.startsWith('crs')
+  ) {
+    score -= 30;
+  }
+
+  return score;
+};
+
+const normalizeMedicineName = (
+  line: string
+): string => {
+  let cleaned = line;
+
+  cleaned = cleaned.replace(
+    /\b(TAB|SOMM|CRS|TABLET)\b/gi,
+    ''
+  );
+
+  cleaned = cleaned.replace(
+    /\s+/g,
+    ' '
+  );
+
+  cleaned = cleaned.trim();
+
+  return cleaned.toUpperCase();
 };
 
 const findMedicineName = (
@@ -189,64 +260,56 @@ const findMedicineName = (
     'batch',
     'ph date',
     'mrp',
-    'tablets ip'
+    'tablets ip',
+    'retail',
+    'caution'
   ];
 
-  const candidates = lines.filter((line) => {
-    const lower = line.toLowerCase();
-
-    return (
-      line.length > 3 &&
-      !ignoreWords.some((word) =>
-        lower.includes(word)
-      )
-    );
-  });
-
-  // highest priority → known medicine keywords
-  for (const line of candidates) {
-    const lower = line.toLowerCase();
-
-    for (const keyword of MEDICINE_KEYWORDS) {
-      if (lower.includes(keyword)) {
-        return line;
-      }
-    }
-  }
-
-  // second priority → medicine pattern
-  const medicinePattern = candidates.find(
-    (line) =>
-      /^[A-Za-z]+\s?\d{2,4}$/i.test(line)
-  );
-
-  if (medicinePattern) {
-    return medicinePattern;
-  }
-
-  // third priority → uppercase dominant
-  const upperCaseLine = candidates.find(
+  const candidates = lines.filter(
     (line) => {
-      const upperCount =
-        line.replace(/[^A-Z]/g, '').length;
+      const lower = line.toLowerCase();
 
-      return upperCount > line.length / 2;
+      return (
+        line.length > 3 &&
+        !ignoreWords.some((word) =>
+          lower.includes(word)
+        )
+      );
     }
   );
 
-  if (upperCaseLine) {
-    return upperCaseLine;
+  if (candidates.length === 0) {
+    return 'Medicine Not Detected';
   }
 
-  return candidates[0] || 'Medicine Not Detected';
+  // score every candidate
+  const scored = candidates.map(
+    (line) => ({
+      line,
+      score: scoreMedicineLine(line)
+    })
+  );
+
+  scored.sort(
+    (a, b) => b.score - a.score
+  );
+
+  const bestMatch = scored[0].line;
+
+  return normalizeMedicineName(bestMatch);
 };
 
 export const analyzeExpiry = async (
   imageBase64: string
 ): Promise<ExpiryResult> => {
-  const text = await extractText(imageBase64);
+  const text = await extractText(
+    imageBase64
+  );
 
-  console.log('FINAL OCR:', text);
+  console.log(
+    'FINAL OCR TEXT:',
+    text
+  );
 
   const medicineName =
     findMedicineName(text);
@@ -272,16 +335,24 @@ export const verifyPrescription = async (
   medicineBase64: string
 ): Promise<VerificationResult> => {
   const prescriptionText =
-    await extractText(prescriptionBase64);
+    await extractText(
+      prescriptionBase64
+    );
 
   const medicineText =
-    await extractText(medicineBase64);
+    await extractText(
+      medicineBase64
+    );
 
   const prescriptionMedicine =
-    findMedicineName(prescriptionText);
+    findMedicineName(
+      prescriptionText
+    );
 
   const actualMedicine =
-    findMedicineName(medicineText);
+    findMedicineName(
+      medicineText
+    );
 
   const prescriptionWords =
     prescriptionMedicine
@@ -292,8 +363,9 @@ export const verifyPrescription = async (
     actualMedicine.toLowerCase();
 
   const matchedWords =
-    prescriptionWords.filter((word) =>
-      medicineLower.includes(word)
+    prescriptionWords.filter(
+      (word) =>
+        medicineLower.includes(word)
     );
 
   const isMatch =
